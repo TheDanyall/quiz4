@@ -1,4 +1,4 @@
-name: Build APK (Fixed SDK Path)
+name: Build APK
 
 on:
   push:
@@ -8,6 +8,11 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     timeout-minutes: 90
+    resources:
+      limits:
+        memory: 8GB
+      requests:
+        memory: 4GB
 
     steps:
     - uses: actions/checkout@v4
@@ -25,59 +30,58 @@ jobs:
           python3-pip autoconf libtool \
           pkg-config zlib1g-dev \
           libncurses5-dev libncursesw5-dev \
-          libtinfo5 cmake libffi-dev libssl-dev wget
+          libtinfo5 cmake libffi-dev libssl-dev wget \
+          lld  # افزودن LLD اینجا
 
     - name: Install Python dependencies
       run: |
         pip install --upgrade pip
         pip install cython==0.29.36 buildozer
 
-    - name: Install Android SDK (New Structure)
+    - name: Install Android SDK
       run: |
         mkdir -p $HOME/.android
         touch $HOME/.android/repositories.cfg
         
-        # Download command line tools
         wget https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip -O /tmp/cmdline-tools.zip
         mkdir -p $HOME/android-sdk/cmdline-tools
         unzip /tmp/cmdline-tools.zip -d $HOME/android-sdk/cmdline-tools
         mv $HOME/android-sdk/cmdline-tools/cmdline-tools $HOME/android-sdk/cmdline-tools/latest
         
-        # Set environment variables
         echo "ANDROID_HOME=$HOME/android-sdk" >> $GITHUB_ENV
         echo "ANDROID_SDK_ROOT=$HOME/android-sdk" >> $GITHUB_ENV
         echo "PATH=$HOME/android-sdk/cmdline-tools/latest/bin:$PATH" >> $GITHUB_ENV
 
-    - name: Install Android packages
+    - name: Accept licenses and install packages
       run: |
         yes | sdkmanager --licenses
         sdkmanager "platforms;android-31" "build-tools;34.0.0" "platform-tools" "ndk;25.2.9519653"
 
-    - name: Configure Buildozer paths
+    - name: Fix Aidl path
       run: |
-        # Create symlink to satisfy Buildozer's expected path
-        mkdir -p $HOME/.buildozer/android/platform
-        ln -s $HOME/android-sdk $HOME/.buildozer/android/platform/android-sdk
-        
-        # Create the exact path Buildozer is looking for
-        mkdir -p $HOME/.buildozer/android/platform/android-sdk/tools/bin
-        ln -s $HOME/android-sdk/cmdline-tools/latest/bin/sdkmanager $HOME/.buildozer/android/platform/android-sdk/tools/bin/sdkmanager
+        AIDL_PATH=$(find $ANDROID_SDK_ROOT/build-tools -name aidl | head -n 1)
+        echo "AIDL found at: $AIDL_PATH"
+        sudo ln -sf $AIDL_PATH /usr/bin/aidl
 
     - name: Build APK
       run: |
-        # Fix Aidl path
-        find $ANDROID_SDK_ROOT/build-tools -name aidl -exec sudo ln -sf {} /usr/bin/aidl \;
+        buildozer android clean  # تمیز کردن ساخت‌های قبلی
+        buildozer -v android release 2>&1 | tee build.log
         
-        # Build with debug info
-        buildozer -v android release 2>&1 | tee build.log || {
-          echo "Build failed, checking log..."
+        # بررسی وجود فایل APK
+        if ls ./bin/*.apk 1> /dev/null 2>&1; then
+          echo "APK generated successfully"
+        else
+          echo "APK generation failed! Check build.log"
           cat build.log
           exit 1
-        }
+        fi
 
     - name: Upload APK
       uses: actions/upload-artifact@v4
       with:
         name: app-release
-        path: ./bin/*.apk
+        path: |
+          ./bin/*.apk
+          ./.buildozer/android/platform/build-*/dists/*/build/outputs/apk/*/*.apk
         retention-days: 3
